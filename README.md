@@ -1,2 +1,2 @@
 # tweet2vec
-A project. 
+THE project. 
