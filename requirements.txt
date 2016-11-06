@@ -1,0 +1,4 @@
+smart_open
+scikit-learn
+gensim
+keras
