@@ -1,4 +1,4 @@
-import smart_open
+from smart_open import smart_open
 import re
 import os
 from sklearn.preprocessing import MultiLabelBinarizer
@@ -14,6 +14,7 @@ url_regex = re.compile(r'\Ahttp\S+| http\S+')
 nonprintable_regex = re.compile(r'[^ -~]+')
 retweet_regex = re.compile(r'\Art | rt ')
 noncharacter_regex = re.compile(r'[^ @0-9a-zA-Z]+')
+multspace_regex = re.compile(r'\s+')
 
 
 def splitHashtags(tweet):
@@ -43,28 +44,62 @@ def clean(tweet):
     tweet = noncharacter_regex.sub('', tweet)
     tweet = tweet.lower()
     tweet = retweet_regex.sub(' ', tweet)
+    tweet = multspace_regex.sub(' ', tweet)
     tweet = tweet.strip()
     return tweet
 
 
-class TweetIterator:
+class TweetHashtagIterator:
     '''
     An iterator that iterates through source (can be filename or list)
-    Yields:
-        tweet, hashtag
+    skips over tweets that have no hashtags if skip_nohashtag=True
+    If mode == 'both':
+        Yields:
+            tweet, hashtag
+    elif mode == 'tweet':
+        Yields:
+            tweet
+    elif mode == 'hashtag':
+        Yields:
+            hashtag
     where tweet is cleaned tweet, and hashtag is list of hashtags.
     '''
-    def __init__(self, source):
+    def __init__(self, source, mode='both', skip_nohashtag=False, tokenize=False):
         self.source = source
+        self.mode = mode
+        self.tokenize = tokenize
+        self.skip_nohashtag = skip_nohashtag
 
     def __iter__(self):
         if type(self.source) == list:
             for t in self.source:
-                yield splitHashtags(t)
+                tweet, hashtag = splitHashtags(t)
+                if self.skip_nohashtag and len(hashtag) == 0:
+                    continue
+                else:
+                    if self.tokenize:
+                        tweet = tweet.split()
+                    if self.mode == 'both':
+                        yield tweet, hashtag
+                    elif self.mode == 'tweet':
+                        yield tweet
+                    elif self.mode == 'hashtag':
+                        yield hashtag
         else:
-            with smart_open.smart_open(self.source) as f:
+            with smart_open(self.source, 'r') as f:
                 for line in f:
-                    yield splitHashtags(line.decode('utf-8'))
+                    tweet, hashtag = splitHashtags(line)
+                    if self.skip_nohashtag and len(hashtag) == 0:
+                        continue
+                    else:
+                        if self.tokenize:
+                            tweet = tweet.split()
+                        if self.mode == 'both':
+                            yield tweet, hashtag
+                        elif self.mode == 'tweet':
+                            yield tweet
+                        elif self.mode == 'hashtag':
+                            yield hashtag
 
 
 def Prepare(source):
@@ -87,8 +122,8 @@ def Prepare(source):
     mlb = MultiLabelBinarizer(sparse_output=True)
     labels = []
     num_tweets = 0
-    with smart_open.smart_open(output_text, 'w') as f:
-        for tweet, hashtags in TweetIterator(source):
+    with smart_open(output_text, 'w') as f:
+        for tweet, hashtags in TweetHashtagIterator(source):
             if num_tweets > 0:
                 f.write('\n')
             labels.append(hashtags)
@@ -124,7 +159,7 @@ def Print(source):
         for t, h in splitHashtags(source):
             print_th(t, h)
     else:
-        for t, h in TweetIterator(source):
+        for t, h in TweetHashtagIterator(source):
             print_th(t, h)
 
 
