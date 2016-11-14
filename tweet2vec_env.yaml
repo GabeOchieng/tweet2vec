@@ -1,0 +1,13 @@
+name: tweet2vec
+dependencies:
+  - python=3.5
+  - smart_open
+  - scikit-learn
+  - gensim
+  - ipython
+  - pandas
+
+# environment setup for conda environment
+# also requires installation of keras (with backend of tensorflow): 
+#install tensorflow: $ conda install -c conda-forge tensorflow
+#install keras: $ pip install git+git://github.com/fchollet/keras.git --upgrade --no-deps
