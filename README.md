@@ -31,6 +31,8 @@ If a `mlb.pickle` exists, the script will load it and then filter out any hashta
 ## TweetIterator
 The main object in prepocessing.py is the `TweetIterator` object. It allows you to iterator through lines in a text file and yield any number of things useful for our model. This allows you to process and generate features for input files in a memory efficient way (i.e. you never have to load all of your data into memory).
 
+The second argument determines whether you skip samples which do not have any hashtags.
+
 To iterate through the raw text:
 ```
 tweet_iterator = TweetIterator('source.txt', False, 'raw_text')
@@ -47,7 +49,7 @@ for t in tweet_iterator:
 
 If you have an `MultilabelBinarizer` object prepared, iterate through the label vectors:
 ```
-tweet_iterator = TweetIterator('source.txt', False, 'labels')
+tweet_iterator = TweetIterator('source.txt', False, 'label')
 for t in tweet_iterator:
     print(t)
 ```
@@ -59,7 +61,7 @@ for t in tweet_iterator:
     print(t)
 ```
 
-If you have a word2vec model saved as `./models/w2v.pickle`, you can iterate through word2vec matrices:
+If you have a word2vec model saved as `./models/w2v.pickle` or `./models/w2v.bin`, you can iterate through word2vec matrices:
 ```
 tweet_iterator = TweetIterator('source.txt', False, 'word_mat')
 for t in tweet_iterator:

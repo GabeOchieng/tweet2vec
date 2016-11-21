@@ -1,27 +1,39 @@
+#!/usr/bin/python
+
 from smart_open import smart_open
 import re
 import os
 from sklearn.preprocessing import MultiLabelBinarizer
 from utils import savePickle
 from utils import loadPickle
+from utils import loadWord2Vec
 import sys
 from warnings import warn
 import string
 import numpy as np
+from itertools import cycle
 
 
 # Try to load the word2vec model and the multilabelbinarizer
-try:
-    w2vfile = './models/w2v.pickle'
-    w2v = loadPickle(w2vfile)
-    word_d = w2v.layer1_size
-except:
+w2vfile = './models/w2v'
+mlbfile = './models/mlb.pickle'
+w2v = False
+
+# Loading pickle files is faster, so check that one first
+if os.path.exists(w2vfile + '.pickle'):
+    w2v = loadPickle(w2vfile + '.pickle')
+elif os.path.exists(w2vfile + '.bin'):
+    w2v = loadWord2Vec(w2vfile + '.bin')
+else:
     warn("{} not found, will not be able to sub or create word matrices".format(w2vfile))
-try:
-    mlbfile = './models/mlb.pickle'
+
+if w2v:
+    word_d = w2v.layer1_size
+
+if os.path.exists(mlbfile):
     mlb = loadPickle(mlbfile)
     valid_hashtags = set(mlb.classes_)
-except:
+else:
     valid_hashtags = set()
     warn("{} not found, will not be able to encode hashtags as vectors".format(mlbfile))
 
@@ -51,13 +63,13 @@ class TweetIterator:
             hashtags known by this model.
         yield_list:
             What iterator should yield. Can be any of:
-                'hashtags', 'raw_tweet', 'raw_tweet_nohashtags', 'clean_tweet', 'word_mat', 'char_mat', 'label'
+                'hashtags', 'raw_tweet', 'raw_tweet_nohashtags', 'tokenized_tweet', 'clean_tweet', 'word_mat', 'char_mat', 'label'
 
     Usage:
 
     To simply print a cleaned version of your tweets:
 
-        tweet_iterator = TweetIterator('tweet_file.txt', False, False, 'clean_tweet')
+        tweet_iterator = TweetIterator('tweet_file.txt', False, 'clean_tweet')
         for tweet in ti:
             print(tweet)
 
@@ -65,14 +77,14 @@ class TweetIterator:
     Or to get word-embedding matrix and label for each tweet
     (skipping over ones without hashtags in your MultiLabelBinarizer)
 
-        tweet_iterator = TweetIterator('tweet_file.txt', True, True, 'word_mat', 'label')
+        tweet_iterator = TweetIterator('tweet_file.txt', True, 'word_mat', 'label')
         keras_model.fit_generator(tweet_iterator)
 
     '''
     def __init__(self, source, skip_nohashtag, *yield_list):
         self.source = source
         self.yield_list = []
-        yw_options = {'hashtags', 'raw_tweet', 'raw_tweet_nohashtags', 'clean_tweet', 'word_mat', 'char_mat', 'label'}
+        yw_options = {'hashtags', 'raw_tweet', 'raw_tweet_nohashtags', 'tokenized_tweet', 'clean_tweet', 'word_mat', 'char_mat', 'label'}
         for yw in yield_list:
             if yw in yw_options:
                 self.yield_list.append(yw)
@@ -81,6 +93,7 @@ class TweetIterator:
         if len(self.yield_list) == 0:
             warn("No valid options, this iterator won't yield anything")
         self.skip_nohashtag = skip_nohashtag
+        self.iter_ = self.__iter__()
 
     def yield_(self, text):
         tweet, hashtags = split_hashtags(text)
@@ -98,6 +111,8 @@ class TweetIterator:
                 out.append(tweet)
             elif yw == 'clean_tweet':
                 out.append(clean(tweet))
+            elif yw == 'tokenized_tweet':
+                out.append(clean(tweet).split())
             elif yw == 'word_mat':
                 out.append(text2mat(tweet, mat_type='word'))
             elif yw == 'char_mat':
@@ -124,6 +139,47 @@ class TweetIterator:
                     elif len(yw) == 1:
                         yw = yw[0]
                     yield yw
+
+    def __next__(self):
+        return self.next()
+
+    def next(self):
+        return next(self.iter_)
+
+
+class KerasIterator:
+    '''
+    The iterator class that iterates through source and feeds features/labels into our keras model.
+    Usage:
+        model.fit_generator(KerasIterator('source.txt'))
+
+    As the keras model requires, THIS ITERATES FOREVER, so it is not recommended you use this class for other purposes.
+    '''
+    def __init__(self, source, batch_size=10, mat_type='char_mat'):
+        tweet_iterator = TweetIterator(source, True, mat_type, 'label')
+        self.iter = cycle(tweet_iterator)
+        self.batch_size = batch_size
+        self.iter_ = self.__iter__()
+
+    def __iter__(self):
+        output_X = []
+        output_y = []
+        i = 0
+        for X, y in self.iter:
+            output_X.append(X)
+            output_y.append(y)
+            i += 1
+            if i == self.batch_size:
+                yield np.stack(output_X), np.vstack(output_y)
+                i = 0
+                output_X = []
+                output_y = []
+
+    def __next__(self):
+        return self.next()
+
+    def next(self):
+        return next(self.iter_)
 
 
 def text2mat(text, mat_type='char', max_chars=140, max_words=50):
@@ -168,10 +224,11 @@ def clean(tweet):
     '''
     Cleans tweet for our model
     '''
+    # TODO this screws up urls (I think I fixed that?) and generates hashtags that are a bunch of spaces for some reason
     if type(tweet) == list:
         return [clean(t) for t in tweet]
-    tweet = noncharacter_regex.sub(' ', tweet)
     tweet = url_regex.sub(' http://url', tweet)
+    tweet = noncharacter_regex.sub(' ', tweet)
     tweet = email_regex.sub(' email@address ', tweet)
     tweet = mention_regex.sub(' @user', tweet)
     tweet = noncharacter_regex.sub('', tweet)
@@ -233,22 +290,32 @@ def PrepareMLB(source, threshold=50):
                         final_set.add(h)
                         del counts[h]
 
-    mlb = MultiLabelBinarizer(sparse_output=True).fit([list(final_set)])
+    mlb = MultiLabelBinarizer(sparse_output=False).fit([list(final_set)])
     savePickle(mlb, output_mlb)
 
 
-def Test(source):
+def Test(source, skip=False):
     print("\nThis should print the raw text of your tweets:\n")
-    for i in TweetIterator(source, False, 'raw_tweet'):
+    for i in TweetIterator(source, skip, 'raw_tweet'):
         print(i)
 
     print("\nThis should print the clean text of your tweets:\n")
-    for i in TweetIterator(source, False, 'clean_tweet'):
+    for i in TweetIterator(source, skip, 'clean_tweet'):
         print(i)
 
     print("\nThis should print the hashtags of your tweets:\n")
-    for i in TweetIterator(source, False, 'hashtags'):
+    for i in TweetIterator(source, skip, 'hashtags'):
         print(i)
+    print()
+
+    print("\nThis should print the character matrix embedding of your tweets:\n")
+    for i in TweetIterator(source, skip, 'char_mat'):
+        print(i.shape)
+    print()
+
+    print("\nThis should print the label vector of your tweets:\n")
+    for i in TweetIterator(source, skip, 'label'):
+        print(i.shape)
     print()
 
 
@@ -274,9 +341,9 @@ if __name__ == '__main__':
     if '--threshold' in sys.argv:
         threshold = int(sys.argv[sys.argv.index('--threshold') + 1])
     elif '-t' in sys.argv:
-        threshold = int(sys.argv[sys.argv.index('--t') + 1])
+        threshold = int(sys.argv[sys.argv.index('-t') + 1])
 
     if '--prepare' in sys.argv or '-p' in sys.argv:
         PrepareMLB(sample, threshold=threshold)
     else:
-        Test(sample)
+        Test(sample, True)
