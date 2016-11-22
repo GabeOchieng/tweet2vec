@@ -63,7 +63,7 @@ class TweetIterator:
             hashtags known by this model.
         yield_list:
             What iterator should yield. Can be any of:
-                'hashtags', 'raw_tweet', 'raw_tweet_nohashtags', 'tokenized_tweet', 'clean_tweet', 'word_mat', 'char_mat', 'label'
+                'hashtags', 'raw_tweet', 'raw_tweet_nohashtags', 'tokenized_tweet', 'clean_tweet', 'word_mat', 'chrd_mat', 'char_mat', 'label'
 
     Usage:
 
@@ -84,7 +84,7 @@ class TweetIterator:
     def __init__(self, source, skip_nohashtag, *yield_list):
         self.source = source
         self.yield_list = []
-        yw_options = {'hashtags', 'raw_tweet', 'raw_tweet_nohashtags', 'tokenized_tweet', 'clean_tweet', 'word_mat', 'char_mat', 'label'}
+        yw_options = {'hashtags', 'raw_tweet', 'raw_tweet_nohashtags', 'tokenized_tweet', 'clean_tweet', 'word_mat', 'char_mat', 'chrd_mat', 'label'}
         for yw in yield_list:
             if yw in yw_options:
                 self.yield_list.append(yw)
@@ -117,6 +117,8 @@ class TweetIterator:
                 out.append(text2mat(tweet, mat_type='word'))
             elif yw == 'char_mat':
                 out.append(text2mat(tweet, mat_type='char'))
+            elif yw == 'chrd_mat':
+                out.append(text2mat(tweet, mat_type='chrd'))
             elif yw == 'label':
                 out.append(mlb.transform([hashtags]))
         return out
@@ -155,24 +157,30 @@ class KerasIterator:
 
     As the keras model requires, THIS ITERATES FOREVER, so it is not recommended you use this class for other purposes.
     '''
-    def __init__(self, source, batch_size=10, mat_type='char_mat'):
-        tweet_iterator = TweetIterator(source, True, mat_type, 'label')
+    def __init__(self, source, batch_size=10):
+        tweet_iterator = TweetIterator(source, True, 'char_mat', 'chrd_mat', 'word_mat', 'label')
         self.iter = cycle(tweet_iterator)
         self.batch_size = batch_size
         self.iter_ = self.__iter__()
 
     def __iter__(self):
-        output_X = []
+        output_charX = []
+        output_chrdX = []
+        output_wordX = []
         output_y = []
         i = 0
-        for X, y in self.iter:
-            output_X.append(X)
+        for charX, chrdX, wordX, y in self.iter:
+            output_charX.append(charX)
+            output_chrdX.append(chrdX)
+            output_wordX.append(wordX)
             output_y.append(y)
             i += 1
             if i == self.batch_size:
-                yield np.stack(output_X), np.vstack(output_y)
+                yield [np.stack(output_charX), np.stack(output_chrdX), np.stack(output_wordX)], np.vstack(output_y)
                 i = 0
-                output_X = []
+                output_charX = []
+                output_chrdX = []
+                output_wordX = []
                 output_y = []
 
     def __next__(self):
@@ -183,7 +191,6 @@ class KerasIterator:
 
 
 def text2mat(text, mat_type='char', max_chars=140, max_words=50):
-    # TODO "charword" mode that adds up the char vectors?
     if mat_type == 'char':
         M = np.zeros((max_chars, len(char_options)))
         for i, c in enumerate(text.lower()):
@@ -193,14 +200,24 @@ def text2mat(text, mat_type='char', max_chars=140, max_words=50):
                 c_pos = char_options.index(c)
                 M[i, c_pos] = 1
     elif mat_type == 'word':
+        text = clean(text)
         M = np.zeros((max_words, word_d))
         i = 0
-        for word in text.lower().split():
+        for word in text.split():
             if i >= max_words:
                 break
             if word in w2v:
                 M[i, :] = w2v[word]
                 i += 1
+    elif mat_type == 'chrd':
+        M = np.zeros((max_words, len(char_options)))
+        for i, word in enumerate(text.lower().split()):
+            if i >= max_words:
+                break
+            for c in word:
+                if c in char_options_set:
+                    c_pos = char_options.index(c)
+                    M[i, c_pos] += 1
 
     return M
 
