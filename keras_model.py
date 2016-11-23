@@ -88,7 +88,7 @@ class Tweet2Vec:
         keras_iterator = KerasIterator(source, batch_size)
         self.model.fit_generator(keras_iterator, samples_per_epoch, num_epochs, verbose=1)
 
-    def validate(self, source, num_to_validate=10):
+    def validate(self, source, num_to_validate=10, num_best=1):
         '''
         More of a "sanity check"
 
@@ -99,10 +99,21 @@ class Tweet2Vec:
         raw = TweetIterator(source, True, 'raw_tweet')
 
         for i, r in zip(x, raw):
-            label = np.zeros((1, i.shape[0]))
-            label[0, i.argmax()] = 1
-            predicted_hashtag = mlb.inverse_transform(label)[0][0]
-            print("\nTweet: {}\nPredicted hashtag: {}\n".format(r, predicted_hashtag))
+            # goes through the highest prediction values and outputs 
+            if num_best > 1: 
+                best = i.argsort()[-num_best:][::-1]
+            else: 
+                best = [i.argmax()]
+
+            print("\nTweet: {}".format(r))
+            best_hashtags = []
+            for b in best: 
+                label = np.zeros((1, i.shape[0]))
+                label[0,b] = 1 
+                predicted_hashtag = mlb.inverse_transform(label)[0][0]
+                best_hashtags.append(predicted_hashtag)
+            print("Predicted hashtags: {}\n".format(', '.join(best_hashtags)))
+
 
     def __getitem__(self, tweet):
         '''
