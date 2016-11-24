@@ -157,8 +157,21 @@ class KerasIterator:
 
     As the keras model requires, THIS ITERATES FOREVER, so it is not recommended you use this class for other purposes.
     '''
-    def __init__(self, source, batch_size=10):
-        tweet_iterator = TweetIterator(source, True, 'char_mat', 'chrd_mat', 'word_mat', 'label')
+    def __init__(self, source, batch_size=10, char=True, chrd=True, word=True):
+        if not (char or chrd or word):
+            warn("No matrix type specified, this KerasIterator probably won't work right")
+        mat_types = []
+        if char:
+            mat_types.append('char_mat')
+        if chrd:
+            mat_types.append('chrd_mat')
+        if word:
+            mat_types.append('word_mat')
+        mat_types.append('label')
+        tweet_iterator = TweetIterator(source, True, *mat_types)
+        self.char = char
+        self.chrd = chrd
+        self.word = word
         self.iter = cycle(tweet_iterator)
         self.batch_size = batch_size
         self.iter_ = self.__iter__()
@@ -169,14 +182,28 @@ class KerasIterator:
         output_wordX = []
         output_y = []
         i = 0
-        for charX, chrdX, wordX, y in self.iter:
-            output_charX.append(charX)
-            output_chrdX.append(chrdX)
-            output_wordX.append(wordX)
-            output_y.append(y)
+        for outs in self.iter:
+            argout = 0
+            if self.char:
+                output_charX.append(outs[argout])
+                argout += 1
+            if self.chrd:
+                output_chrdX.append(outs[argout])
+                argout += 1
+            if self.word:
+                output_wordX.append(outs[argout])
+                argout += 1
+            output_y.append(outs[argout])
             i += 1
             if i == self.batch_size:
-                yield [np.stack(output_charX), np.stack(output_chrdX), np.stack(output_wordX)], np.vstack(output_y)
+                out = []
+                if self.char:
+                    out.append(np.stack(output_charX))
+                if self.chrd:
+                    out.append(np.stack(output_chrdX))
+                if self.word:
+                    out.append(np.stack(output_wordX))
+                yield out, np.vstack(output_y)
                 i = 0
                 output_charX = []
                 output_chrdX = []

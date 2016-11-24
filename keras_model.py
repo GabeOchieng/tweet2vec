@@ -2,6 +2,7 @@ from keras.models import Sequential
 from keras.layers import Merge
 from keras.layers import GRU
 from keras.layers import Dense
+from keras.layers.wrappers import Bidirectional
 from keras import backend
 from preprocess import KerasIterator
 from preprocess import TweetIterator
@@ -22,6 +23,7 @@ else:
 
 
 # TODO need saving/loading models. There's already a function in utils to do this but haven't looked into the details
+# TODO need a consistent way to determine what are the inputs/what KerasIterator should iterate over... specify when generating model?  Creating Tweet2Vec object? Fitting?
 
 
 class Tweet2Vec:
@@ -47,24 +49,21 @@ class Tweet2Vec:
         Build the model
         '''
 
-        # character matrix branch
-        char_branch = Sequential()
-        char_branch.add(GRU(20, input_dim=self.char_dim, return_sequences=False))
-        char_branch.add(Dense(20, activation='relu'))
-
-        # character matrix branch
+        # chrd matrix branch
         chrd_branch = Sequential()
-        chrd_branch.add(GRU(20, input_dim=self.chrd_dim, return_sequences=False))
+        chrd_branch.add(Bidirectional(GRU(20, input_dim=self.chrd_dim, return_sequences=False), input_shape=(None, self.chrd_dim)))
         chrd_branch.add(Dense(20, activation='relu'))
 
         # word matrix branch
         word_branch = Sequential()
-        word_branch.add(GRU(20, input_dim=self.word_dim, return_sequences=False))
+        word_branch.add(Bidirectional(GRU(20, input_dim=self.word_dim, return_sequences=False), input_shape=(None, self.word_dim)))
         word_branch.add(Dense(20, activation='relu'))
 
         # merge models (concat outputs)
         self.model = Sequential()
-        merged = Merge([char_branch, chrd_branch, word_branch], mode='concat')
+
+        # The order here determines the order of your inputs. This must correspond to the standard (char, chrd, word) order.
+        merged = Merge([chrd_branch, word_branch], mode='concat')
         self.model.add(merged)
 
         # final hidden layer
@@ -83,9 +82,12 @@ class Tweet2Vec:
         The inputs mean what they mean
 
         This will loop through source forever so it's okay if the numbers are more than your actual data
-        '''
 
-        keras_iterator = KerasIterator(source, batch_size)
+        For KerasIterator object, specify what matrices it should yield (char, chrd, word),
+        these must correspond to what inputs the model expects.
+        Note: the inputs will always feed to the model in the (char, chrd, word) order.
+        '''
+        keras_iterator = KerasIterator(source, batch_size, char=False, chrd=True, word=True)
         self.model.fit_generator(keras_iterator, samples_per_epoch, num_epochs, verbose=1)
 
     def validate(self, source, num_to_validate=10, num_best=1):
@@ -99,21 +101,20 @@ class Tweet2Vec:
         raw = TweetIterator(source, True, 'raw_tweet')
 
         for i, r in zip(x, raw):
-            # goes through the highest prediction values and outputs 
-            if num_best > 1: 
+            # goes through the highest prediction values and outputs
+            if num_best > 1:
                 best = i.argsort()[-num_best:][::-1]
-            else: 
+            else:
                 best = [i.argmax()]
 
             print("\nTweet: {}".format(r))
             best_hashtags = []
-            for b in best: 
+            for b in best:
                 label = np.zeros((1, i.shape[0]))
-                label[0,b] = 1 
+                label[0, b] = 1
                 predicted_hashtag = mlb.inverse_transform(label)[0][0]
                 best_hashtags.append(predicted_hashtag)
             print("Predicted hashtags: {}\n".format(', '.join(best_hashtags)))
-
 
     def __getitem__(self, tweet):
         '''
