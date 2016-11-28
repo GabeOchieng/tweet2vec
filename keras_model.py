@@ -2,7 +2,6 @@ from keras.models import Sequential
 from keras.layers import Merge
 from keras.layers import GRU
 from keras.layers import Dense
-from keras.layers.convolutional import Convolution1D
 from keras.layers.wrappers import Bidirectional
 from keras import backend
 from preprocess import KerasIterator
@@ -40,6 +39,9 @@ class Tweet2Vec:
         self.output_dim = y.shape[1]
         self.vector_cache_ = {}
 
+        # I think this just affects the feature preprocessing, probably should be num cores - 1
+        self.num_workers = 1
+
         if model is None:
             self.gen_model()
         else:
@@ -68,20 +70,15 @@ class Tweet2Vec:
         word_branch.add(Bidirectional(GRU(50, input_dim=self.word_dim, return_sequences=False), input_shape=(None, self.word_dim)))
         # word_branch.add(Dense(20, activation='relu'))
 
-        # char matrix branch
-        char_branch = Sequential()
-        char_branch.add(Convolution1D(100, 10, input_dim=self.char_dim))
-        # char_branch.add(Bidirectional(GRU(50, input_dim=self.char_dim, return_sequences=False), input_shape=(None, self.char_dim)))
-        char_branch.add(Bidirectional(GRU(50)))
-        char_branch.add(Dense(50, activation='relu'))
-        char_branch.add(Dense(50, activation='relu'))
-        char_branch.add(Dense(50, activation='relu'))
+        # chrd matrix branch
+        chrd_branch = Sequential()
+        chrd_branch.add(Bidirectional(GRU(50, input_dim=self.chrd_dim, return_sequences=False), input_shape=(None, self.chrd_dim)))
+        chrd_branch.add(Dense(50, activation='relu'))
 
         # merge models (concat outputs)
         self.model = Sequential()
-
         # The order here determines the order of your inputs. This must correspond to the standard (char, chrd, word) order.
-        merged = Merge([char_branch, word_branch], mode='concat')
+        merged = Merge([chrd_branch, word_branch], mode='concat')
         self.model.add(merged)
         # self.model = char_branch
 
@@ -112,18 +109,18 @@ class Tweet2Vec:
         # If not specified, train on ALL data in source
         if samples is None:
             samples = len(keras_iterator.tweet_iterator)
-        self.fit_data = self.model.fit_generator(keras_iterator, samples, num_epochs, verbose=1, nb_worker=2, pickle_safe=True)
+        self.fit_data = self.model.fit_generator(keras_iterator, samples, num_epochs, verbose=1, nb_worker=self.num_workers, pickle_safe=True)
 
-    def evaluate(self, source):
+    def evaluate(self, source, batch_size=1000):
         '''
         Prints the loss on tweets in source
         '''
-        keras_iterator = KerasIterator(source, 1, char=self.char, chrd=self.chrd, word=self.word)
+        keras_iterator = KerasIterator(source, batch_size, char=self.char, chrd=self.chrd, word=self.word)
         num_samples = len(keras_iterator.tweet_iterator)
-        loss = self.model.evaluate_generator(keras_iterator, num_samples)
+        loss = self.model.evaluate_generator(keras_iterator, num_samples, nb_worker=self.num_workers, pickle_safe=True)
         print("\nLoss on the {} samples in {} is: {}\n".format(num_samples, source, loss))
 
-    def predict_hashtags(self, source, num_to_validate=None, num_best=1):
+    def predict_hashtags(self, source, num_to_validate=None, num_best=1, batch_size=1000):
         '''
         Prints the `num_best` top predicted hashtags for `num_to_validate` lines in source
         '''
@@ -134,7 +131,7 @@ class Tweet2Vec:
         if num_to_validate is None:
             num_to_validate = len(raw)
 
-        x = self.model.predict_generator(KerasIterator(source, 1, char=self.char, chrd=self.chrd, word=self.word), num_to_validate)
+        x = self.model.predict_generator(KerasIterator(source, batch_size, char=self.char, chrd=self.chrd, word=self.word), num_to_validate, nb_worker=self.num_workers, pickle_safe=True)
 
         for i, r in zip(x, raw):
             # goes through the highest prediction values and outputs
@@ -172,6 +169,7 @@ class Tweet2Vec:
 
         not_cached = [t for t in tweet if t not in self.vector_cache_]
 
+        # TODO this should happen in batches to avoid memory error
         if not_cached:
             mats_in = []
             if self.char:
@@ -253,7 +251,7 @@ class Tweet2Vec:
 
 if __name__ == '__main__':
 
-    tweet2vec = Tweet2Vec(char=True, chrd=False, word=True)
+    tweet2vec = Tweet2Vec(char=False, chrd=True, word=True)
 
     train = './data/train.csv'
     test = './data/test.csv'

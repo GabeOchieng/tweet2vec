@@ -131,7 +131,7 @@ class TweetIterator:
         return out
 
     def __iter__(self):
-        if type(self.source) == list:
+        if isinstance(self.source, list):
             for text in self.source:
                 yw = self.yield_(text)
                 if len(yw) == 0:
@@ -150,6 +150,8 @@ class TweetIterator:
                     yield yw
 
     def __getitem__(self, i):
+        if isinstance(i, slice):
+            return [self[j] for j in range(*i.indices(len(self)))]
         j = 0
 
         if i < 0:
@@ -169,8 +171,17 @@ class TweetIterator:
         return next(self.iter_)
 
     def __len__(self):
-        if not self.length:
-            self.length = countLines(self.source)
+        if self.length is False:
+            if self.skip_nohashtag:
+                # this will be slow for large sources, but I see no better way
+                i = 0
+                for _ in TweetIterator(self.source, True, 'hashtags'):
+                    i += 1
+                self.length = i
+            else:
+                # if not skipping nohashtags, length is just number lines in source
+                # way faster than previous method...
+                self.length = countLines(self.source)
         return self.length
 
     def get_random(self):
@@ -248,9 +259,7 @@ class KerasIterator:
         return next(self.iter_)
 
 
-def text2mat(text, mat_type='char', max_chars=140, max_words=30, remove_hashtags=True):
-    if remove_hashtags:
-        text = hashtag_regex.sub(' ', text)
+def text2mat(text, mat_type='char', max_chars=140, max_words=30):
     text = text.lower().strip()
     if mat_type == 'char':
         M = np.zeros((max_chars, len(char_options)))
@@ -374,7 +383,9 @@ def PrepareHashtags(source, top_n=2000):
     top_hashtags = counts_sorted[:top_n]
 
     hashtag_file = os.path.join(model_dir, 'hashtags.txt')
+    hashtag_count_file = os.path.join(model_dir, 'hashtag_counts.pickle')
     saveList(top_hashtags, hashtag_file)
+    savePickle(counts, hashtag_count_file)
 
 
 def MakeMLB(top_n=1000):
@@ -451,5 +462,5 @@ if __name__ == '__main__':
         PrepareHashtags(sample, top_n=2000)
     if '--make' in sys.argv or '-m' in sys.argv:
         MakeMLB(top_n=1000)
-    else:
+    if '--test' in sys.argv:
         Test(sample, True)
