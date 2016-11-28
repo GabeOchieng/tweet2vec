@@ -1,6 +1,8 @@
 import pickle
 from gensim.models import word2vec
 from keras.models import load_model
+from itertools import takewhile
+from itertools import repeat
 
 
 def savePickle(data, filename):
@@ -29,3 +31,22 @@ def saveTweet2Vec(model, filename):
 
 def loadTweet2Vec(filename):
     return load_model(filename)
+
+
+def saveList(l, filename):
+    with open(filename, 'w') as f:
+        f.write('\n'.join(l))
+
+
+def loadList(filename):
+    with open(filename) as f:
+        l = f.readlines()
+    l = [s.strip() for s in l]
+    return l
+
+
+def countLines(filename):
+    with open(filename, 'rb') as f:
+        bufgen = takewhile(lambda x: x, (f.raw.read(1024 * 1024) for _ in repeat(None)))
+        num_lines = sum(buf.count(b'\n') for buf in bufgen)
+    return num_lines

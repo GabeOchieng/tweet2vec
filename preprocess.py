@@ -7,6 +7,9 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from utils import savePickle
 from utils import loadPickle
 from utils import loadWord2Vec
+from utils import saveList
+from utils import loadList
+from utils import countLines
 import sys
 from warnings import warn
 import string
@@ -30,12 +33,15 @@ else:
 if w2v:
     word_d = w2v.layer1_size
 
-if os.path.exists(mlbfile):
+prepare_mode = '-p' in sys.argv or '--prepare' in sys.argv or '-m' in sys.argv or '--make' in sys.argv
+
+if os.path.exists(mlbfile) and not prepare_mode:
     mlb = loadPickle(mlbfile)
     valid_hashtags = set(mlb.classes_)
 else:
     valid_hashtags = set()
-    warn("{} not found, will not be able to encode hashtags as vectors".format(mlbfile))
+    if not prepare_mode:
+        warn("{} not found, will not be able to encode hashtags as vectors".format(mlbfile))
 
 # Compiling some regular expressions for speed
 hashtag_regex = re.compile(r'\A#\w+|\s#\w+')
@@ -44,7 +50,7 @@ email_regex = re.compile(r'\S+@\S+.\S+')
 url_regex = re.compile(r'\Ahttp\S+|\shttp\S+')
 nonprintable_regex = re.compile(r'[^ -~]+')
 retweet_regex = re.compile(r'\Art\s|\srt\s')
-noncharacter_regex = re.compile(r'[^\s@0-9a-zA-Z]+')
+noncharacter_regex = re.compile(r'[^@0-9a-zA-Z]+')
 multspace_regex = re.compile(r'\s+')
 char_options = string.ascii_lowercase + string.digits + string.punctuation
 char_options_set = set(char_options)
@@ -94,6 +100,7 @@ class TweetIterator:
             warn("No valid options, this iterator won't yield anything")
         self.skip_nohashtag = skip_nohashtag
         self.iter_ = self.__iter__()
+        self.length = False
 
     def yield_(self, text):
         tweet, hashtags = split_hashtags(text)
@@ -142,11 +149,33 @@ class TweetIterator:
                         yw = yw[0]
                     yield yw
 
+    def __getitem__(self, i):
+        j = 0
+
+        if i < 0:
+            i = i % len(self)
+        elif i >= len(self):
+            raise IndexError("Can't get tweet {}, only {} lines in source".format(i, len(self)))
+        iter_ = self.__iter__()
+        while j <= i:
+            t = next(iter_)
+            j += 1
+        return t
+
     def __next__(self):
         return self.next()
 
     def next(self):
         return next(self.iter_)
+
+    def __len__(self):
+        if not self.length:
+            self.length = countLines(self.source)
+        return self.length
+
+    def get_random(self):
+        i = np.random.choice(len(self))
+        return self[i]
 
 
 class KerasIterator:
@@ -155,7 +184,9 @@ class KerasIterator:
     Usage:
         model.fit_generator(KerasIterator('source.txt'))
 
-    As the keras model requires, THIS ITERATES FOREVER, so it is not recommended you use this class for other purposes.
+    As the keras model requires, this iterates forever!
+
+    Not recommended you use this class for other purposes...
     '''
     def __init__(self, source, batch_size=10, char=True, chrd=True, word=True):
         if not (char or chrd or word):
@@ -168,11 +199,11 @@ class KerasIterator:
         if word:
             mat_types.append('word_mat')
         mat_types.append('label')
-        tweet_iterator = TweetIterator(source, True, *mat_types)
+        self.tweet_iterator = TweetIterator(source, True, *mat_types)
         self.char = char
         self.chrd = chrd
         self.word = word
-        self.iter = cycle(tweet_iterator)
+        self.iter = cycle(self.tweet_iterator)
         self.batch_size = batch_size
         self.iter_ = self.__iter__()
 
@@ -217,7 +248,10 @@ class KerasIterator:
         return next(self.iter_)
 
 
-def text2mat(text, mat_type='char', max_chars=140, max_words=50):
+def text2mat(text, mat_type='char', max_chars=140, max_words=30, remove_hashtags=True):
+    if remove_hashtags:
+        text = hashtag_regex.sub(' ', text)
+    text = text.lower().strip()
     if mat_type == 'char':
         M = np.zeros((max_chars, len(char_options)))
         for i, c in enumerate(text.lower()):
@@ -259,7 +293,8 @@ def split_hashtags(tweet):
     if type(tweet) == list:
         return [split_hashtags(t) for t in tweet]
     hashtags = hashtag_regex.findall(tweet)
-    hashtags = [h.strip().lower() for h in hashtags]
+    hashtags = ['#' + clean(h) for h in hashtags]
+    hashtags = [h for h in hashtags if h != '#']
     tweet = hashtag_regex.sub('', tweet)
     return tweet, hashtags
 
@@ -268,15 +303,13 @@ def clean(tweet):
     '''
     Cleans tweet for our model
     '''
-    # TODO this screws up urls (I think I fixed that?) and generates hashtags that are a bunch of spaces for some reason
     if type(tweet) == list:
         return [clean(t) for t in tweet]
-    tweet = url_regex.sub(' http://url', tweet)
+    tweet = tweet.lower()
+    tweet = url_regex.sub(' httpurl', tweet)
     tweet = noncharacter_regex.sub(' ', tweet)
     tweet = email_regex.sub(' email@address ', tweet)
     tweet = mention_regex.sub(' @user', tweet)
-    tweet = noncharacter_regex.sub('', tweet)
-    tweet = tweet.lower()
     tweet = retweet_regex.sub(' ', tweet)
     tweet = multspace_regex.sub(' ', tweet)
     tweet = tweet.strip()
@@ -304,38 +337,70 @@ def sub(tweet, thresh=.9):
     return ' '.join(words)
 
 
-def PrepareMLB(source, threshold=50):
+def PrepareHashtags(source, top_n=2000):
+    '''
+    This function will pick out the `top_n` most frequent hashtags
+
+    And save them as `./models/hashtags.txt`
+
+    You can then make a MultiLabelBinarizer object with MakeMLB()
+    '''
+
+    print("Processing {} and creating MultiLabelBinarizer object".format(source))
+
+    model_dir = './models'
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+
+    counts = {}
+    counts_details = {}
+
+    num_tweets = 0
+
+    for i, hashtags in enumerate(TweetIterator(source, True, 'hashtags')):
+        num_tweets += 1
+        if num_tweets % 1000 == 0:
+            print("Processed {} tweets".format(num_tweets))
+        for h in hashtags:
+            if h not in counts:
+                counts[h] = 1
+                counts_details[h] = [i]
+            else:
+                counts[h] += 1
+                counts_details[h].append(i)
+
+    counts_sorted = sorted(counts.keys(), key=lambda x: -counts[x])
+
+    top_hashtags = counts_sorted[:top_n]
+
+    hashtag_file = os.path.join(model_dir, 'hashtags.txt')
+    saveList(top_hashtags, hashtag_file)
+
+
+def MakeMLB(top_n=1000):
     '''
     This function produces the "MultiLabelBinarizer" object and saves it as a
     pickle file in the ./models directory
 
     The MultiLabelBinarizer is the object that turns a list of hashtags into a
-    sparse binary vector, for labels for our model
+    binary vector, for labels for our model
 
-    This function will filter out any hashtags that appear fewer than `threshold` times
+    Loads `top_n` hashtags in `./models/hashtags.txt' and makes a MultiLabelBinarizer object
     '''
 
     model_dir = './models'
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
     output_mlb = os.path.join(model_dir, 'mlb.pickle')
+    hashtag_file = os.path.join(model_dir, 'hashtags.txt')
 
-    final_set = set()
-    counts = {}
+    top_hashtags = loadList(hashtag_file)
+    top_hashtags = top_hashtags[:top_n]
 
-    for hashtags in TweetIterator(source, False, 'hashtags'):
-        for h in hashtags:
-            if h not in final_set:
-                if h not in counts:
-                    counts[h] = 1
-                else:
-                    counts[h] += 1
-                    if counts[h] >= threshold:
-                        final_set.add(h)
-                        del counts[h]
-
-    mlb = MultiLabelBinarizer(sparse_output=False).fit([list(final_set)])
+    mlb = MultiLabelBinarizer(sparse_output=False).fit([top_hashtags])
     savePickle(mlb, output_mlb)
+
+    print("Final set of hashtags: {}".format(mlb.classes_))
 
 
 def Test(source, skip=False):
@@ -370,7 +435,7 @@ if __name__ == '__main__':
     ext = os.path.splitext(last_arg)[-1]
     valid_exts = ['.txt', '.csv']
 
-    threshold = 10
+    threshold = 100
 
     if ext in valid_exts:
         sample = sys.argv[-1]
@@ -382,12 +447,9 @@ if __name__ == '__main__':
         sample = test_tweets
         threshold = 0
 
-    if '--threshold' in sys.argv:
-        threshold = int(sys.argv[sys.argv.index('--threshold') + 1])
-    elif '-t' in sys.argv:
-        threshold = int(sys.argv[sys.argv.index('-t') + 1])
-
     if '--prepare' in sys.argv or '-p' in sys.argv:
-        PrepareMLB(sample, threshold=threshold)
+        PrepareHashtags(sample, top_n=2000)
+    if '--make' in sys.argv or '-m' in sys.argv:
+        MakeMLB(top_n=1000)
     else:
         Test(sample, True)
