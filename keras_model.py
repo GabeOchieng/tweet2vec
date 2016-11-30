@@ -2,6 +2,8 @@ from keras.models import Sequential
 from keras.layers import Merge
 from keras.layers import GRU
 from keras.layers import Dense
+# from keras.layers.convolutional import Convolution1D
+# from keras.layers.pooling import GlobalAveragePooling1D
 from keras.layers.wrappers import Bidirectional
 from keras import backend
 from preprocess import KerasIterator
@@ -12,6 +14,8 @@ import numpy as np
 import os
 from warnings import warn
 from numpy.linalg import norm
+from utils import saveTweet2Vec
+from utils import loadTweet2Vec
 
 
 mlb_file = './models/mlb.pickle'
@@ -43,8 +47,13 @@ class Tweet2Vec:
         self.num_workers = 1
 
         if model is None:
+            # nothing specified, generate a model
             self.gen_model()
+        elif isinstance(model, str):
+            # model is a filename
+            self.load(model)
         else:
+            # model is a keras model
             self.model = model
 
         # Former is using a merged model, latter if not
@@ -67,29 +76,29 @@ class Tweet2Vec:
 
         # word matrix branch
         word_branch = Sequential()
-        word_branch.add(Bidirectional(GRU(50, input_dim=self.word_dim, return_sequences=False), input_shape=(None, self.word_dim)))
-        # word_branch.add(Dense(20, activation='relu'))
+        word_branch.add(Bidirectional(GRU(self.word_dim * 4, input_dim=self.word_dim, return_sequences=False), input_shape=(None, self.word_dim)))
+        # word_branch.add(GlobalAveragePooling1D())
 
         # chrd matrix branch
         chrd_branch = Sequential()
-        chrd_branch.add(Bidirectional(GRU(50, input_dim=self.chrd_dim, return_sequences=False), input_shape=(None, self.chrd_dim)))
-        chrd_branch.add(Dense(50, activation='relu'))
+        chrd_branch.add(Bidirectional(GRU(self.chrd_dim * 4, input_dim=self.chrd_dim, return_sequences=False), input_shape=(None, self.chrd_dim)))
 
         # merge models (concat outputs)
         self.model = Sequential()
         # The order here determines the order of your inputs. This must correspond to the standard (char, chrd, word) order.
         merged = Merge([chrd_branch, word_branch], mode='concat')
         self.model.add(merged)
-        # self.model = char_branch
+        # self.model = word_branch
 
-        # final hidden layer
-        self.model.add(Dense(50, activation='relu'))
+        # final hidden layer(s)
+        self.model.add(Dense(3000, activation='relu'))
+        self.model.add(Dense(300))
 
         # output layer
         self.model.add(Dense(self.output_dim, activation='softmax'))
 
         # loss function/optimizer
-        self.model.compile(loss='categorical_crossentropy', optimizer='adam')
+        self.model.compile(loss='categorical_crossentropy', optimizer='nadam')
 
     def fit(self, source, batch_size=100, samples=None, num_epochs=1):
         '''
@@ -111,7 +120,7 @@ class Tweet2Vec:
             samples = len(keras_iterator.tweet_iterator)
         self.fit_data = self.model.fit_generator(keras_iterator, samples, num_epochs, verbose=1, nb_worker=self.num_workers, pickle_safe=True)
 
-    def evaluate(self, source, batch_size=1000):
+    def evaluate(self, source, batch_size=100):
         '''
         Prints the loss on tweets in source
         '''
@@ -120,7 +129,7 @@ class Tweet2Vec:
         loss = self.model.evaluate_generator(keras_iterator, num_samples, nb_worker=self.num_workers, pickle_safe=True)
         print("\nLoss on the {} samples in {} is: {}\n".format(num_samples, source, loss))
 
-    def predict_hashtags(self, source, num_to_validate=None, num_best=1, batch_size=1000):
+    def predict_hashtags(self, source, num_to_validate=None, num_best=1, batch_size=500):
         '''
         Prints the `num_best` top predicted hashtags for `num_to_validate` lines in source
         '''
@@ -196,7 +205,7 @@ class Tweet2Vec:
 
         return np.array([self.vector_cache_[t] for t in tweet])
 
-    def most_similar(self, tweet, source, batch_size=1000):
+    def most_similar(self, tweet, source, batch_size=500):
         '''
         Iterates through `source` and finds the line with the highest cosine
         similarity to `tweet`
@@ -248,6 +257,12 @@ class Tweet2Vec:
             t2, d = self.most_similar(t1, source2)
             print("\nOriginal tweet: {}\nClosest tweet: {}\nDistance: {}\n".format(t1, t2, d))
 
+    def save(self, filename):
+        saveTweet2Vec(self.model, filename)
+
+    def load(self, filename):
+        self.model = loadTweet2Vec(filename)
+
 
 if __name__ == '__main__':
 
@@ -257,6 +272,7 @@ if __name__ == '__main__':
     test = './data/test.csv'
 
     # samples=None (the default) will train on all input data
-    tweet2vec.fit(train, samples=1000)
-    tweet2vec.evaluate(test)
-    tweet2vec.most_similar_test(train, './data/sample.csv')
+    tweet2vec.fit(train, num_epochs=1)
+    # tweet2vec.evaluate(test)
+    # tweet2vec.most_similar_test(train, test)
+    tweet2vec.save('./models/tweet2vec.keras')

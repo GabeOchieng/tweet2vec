@@ -263,7 +263,7 @@ def text2mat(text, mat_type='char', max_chars=140, max_words=30):
     text = text.lower().strip()
     if mat_type == 'char':
         M = np.zeros((max_chars, len(char_options)))
-        for i, c in enumerate(text.lower()):
+        for i, c in enumerate(text):
             if i >= max_chars:
                 break
             if c in char_options_set:
@@ -272,16 +272,14 @@ def text2mat(text, mat_type='char', max_chars=140, max_words=30):
     elif mat_type == 'word':
         text = clean(text)
         M = np.zeros((max_words, word_d))
-        i = 0
-        for word in text.split():
+        for i, word in enumerate(text.split()):
             if i >= max_words:
                 break
             if word in w2v:
                 M[i, :] = w2v[word]
-                i += 1
     elif mat_type == 'chrd':
         M = np.zeros((max_words, len(char_options)))
-        for i, word in enumerate(text.lower().split()):
+        for i, word in enumerate(text.split()):
             if i >= max_words:
                 break
             for c in word:
