@@ -2,6 +2,7 @@ from keras.models import Sequential
 from keras.layers import Merge
 from keras.layers import GRU
 from keras.layers import Dense
+from keras.layers import Dropout
 # from keras.layers.convolutional import Convolution1D
 # from keras.layers.pooling import GlobalAveragePooling1D
 from keras.layers.wrappers import Bidirectional
@@ -16,6 +17,9 @@ from warnings import warn
 from numpy.linalg import norm
 from utils import saveTweet2Vec
 from utils import loadTweet2Vec
+import matplotlib.pyplot as plt
+from keras.callbacks import ModelCheckpoint
+from keras.callbacks import CSVLogger
 
 
 mlb_file = './models/mlb.pickle'
@@ -23,9 +27,6 @@ if os.path.exists(mlb_file):
     mlb = loadPickle(mlb_file)
 else:
     warn("{} doesn't exist - need this to generate labels for training: run `./preprocess.py --prepare input.txt` first")
-
-
-# TODO need saving/loading models. There's already a function in utils to do this but haven't looked into the details
 
 
 class Tweet2Vec:
@@ -44,6 +45,7 @@ class Tweet2Vec:
         self.vector_cache_ = {}
 
         # I think this just affects the feature preprocessing, probably should be num cores - 1
+        # ACTUALLY doesn't seem to do what we want to do - seems to make it so we loop over same data and overfit like crazy
         self.num_workers = 1
 
         if model is None:
@@ -92,6 +94,7 @@ class Tweet2Vec:
 
         # final hidden layer(s)
         self.model.add(Dense(3000, activation='relu'))
+        self.model.add(Dropout(.5))
         self.model.add(Dense(300))
 
         # output layer
@@ -100,7 +103,7 @@ class Tweet2Vec:
         # loss function/optimizer
         self.model.compile(loss='categorical_crossentropy', optimizer='nadam')
 
-    def fit(self, source, batch_size=100, samples=None, num_epochs=1):
+    def fit(self, source, test=None, batch_size=100, samples=None, num_epochs=1, checkpoint=False):
         '''
         Fit the model using data in source
 
@@ -114,11 +117,38 @@ class Tweet2Vec:
         '''
 
         keras_iterator = KerasIterator(source, batch_size, char=self.char, chrd=self.chrd, word=self.word)
+        if test is None:
+            test_iterator = None
+            test_length = None
+            # If no test, need to monitor train loss not val_loss
+            checker = ModelCheckpoint('./models/latest_model.keras', monitor='loss', verbose=1, save_best_only=True)
+        else:
+            test_iterator = KerasIterator(test, batch_size, char=self.char, chrd=self.chrd, word=self.word)
+            test_length = len(test_iterator.tweet_iterator)
+            checker = ModelCheckpoint('./models/latest_model.keras', verbose=1, save_best_only=True)
+        if checkpoint:
+            callbacks = [checker]
+        else:
+            callbacks = []
+
+        logger = CSVLogger('./models/epoch_history.csv')
+        callbacks.append(logger)
 
         # If not specified, train on ALL data in source
         if samples is None:
             samples = len(keras_iterator.tweet_iterator)
-        self.fit_data = self.model.fit_generator(keras_iterator, samples, num_epochs, verbose=1, nb_worker=self.num_workers, pickle_safe=True)
+        self.fit_data = self.model.fit_generator(keras_iterator, samples, num_epochs, validation_data=test_iterator, nb_val_samples=test_length, verbose=1, nb_worker=self.num_workers, pickle_safe=False, callbacks=callbacks)
+
+    def plot(self, filename='./models/training_loss.png'):
+        plt.figure()
+        plt.plot(self.fit_data.history['loss'], lw=3, label='train', color='r')
+        if 'val_loss' in self.fit_data.history:
+            plt.plot(self.fit_data.history['val_loss'], lw=3, label='test', color='b')
+        plt.title('Model Loss')
+        plt.ylabel('loss')
+        plt.xlabel('epoch')
+        plt.legend()
+        plt.savefig(filename)
 
     def evaluate(self, source, batch_size=100):
         '''
@@ -126,7 +156,7 @@ class Tweet2Vec:
         '''
         keras_iterator = KerasIterator(source, batch_size, char=self.char, chrd=self.chrd, word=self.word)
         num_samples = len(keras_iterator.tweet_iterator)
-        loss = self.model.evaluate_generator(keras_iterator, num_samples, nb_worker=self.num_workers, pickle_safe=True)
+        loss = self.model.evaluate_generator(keras_iterator, num_samples, nb_worker=self.num_workers, pickle_safe=False)
         print("\nLoss on the {} samples in {} is: {}\n".format(num_samples, source, loss))
 
     def predict_hashtags(self, source, num_to_validate=None, num_best=1, batch_size=500):
@@ -140,7 +170,7 @@ class Tweet2Vec:
         if num_to_validate is None:
             num_to_validate = len(raw)
 
-        x = self.model.predict_generator(KerasIterator(source, batch_size, char=self.char, chrd=self.chrd, word=self.word), num_to_validate, nb_worker=self.num_workers, pickle_safe=True)
+        x = self.model.predict_generator(KerasIterator(source, batch_size, char=self.char, chrd=self.chrd, word=self.word), num_to_validate, nb_worker=self.num_workers, pickle_safe=False)
 
         for i, r in zip(x, raw):
             # goes through the highest prediction values and outputs
@@ -271,8 +301,12 @@ if __name__ == '__main__':
     train = './data/train.csv'
     test = './data/test.csv'
 
+    train = './data/all_shuffled_train.csv'
+    test = './data/all_shuffled_test.csv'
+
     # samples=None (the default) will train on all input data
-    tweet2vec.fit(train, num_epochs=1)
+    # 6331717 samples in train set
+    tweet2vec.fit(train, samples=10**6, test=test, num_epochs=1000, checkpoint=True)
     # tweet2vec.evaluate(test)
     # tweet2vec.most_similar_test(train, test)
-    tweet2vec.save('./models/tweet2vec.keras')
+    # tweet2vec.plot()

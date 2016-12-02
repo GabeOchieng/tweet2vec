@@ -15,6 +15,7 @@ from warnings import warn
 import string
 import numpy as np
 from itertools import cycle
+from itertools import repeat
 
 
 # Try to load the word2vec model and the multilabelbinarizer
@@ -214,7 +215,7 @@ class KerasIterator:
         self.char = char
         self.chrd = chrd
         self.word = word
-        self.iter = cycle(self.tweet_iterator)
+        self.iter = repeat(self.tweet_iterator)
         self.batch_size = batch_size
         self.iter_ = self.__iter__()
 
@@ -224,33 +225,57 @@ class KerasIterator:
         output_wordX = []
         output_y = []
         i = 0
-        for outs in self.iter:
-            argout = 0
-            if self.char:
-                output_charX.append(outs[argout])
-                argout += 1
-            if self.chrd:
-                output_chrdX.append(outs[argout])
-                argout += 1
-            if self.word:
-                output_wordX.append(outs[argout])
-                argout += 1
-            output_y.append(outs[argout])
-            i += 1
-            if i == self.batch_size:
+        for iter_ in self.iter:
+            for outs in iter_:
+
+                argout = 0
+                if self.char:
+                    output_charX.append(outs[argout])
+                    argout += 1
+                if self.chrd:
+                    output_chrdX.append(outs[argout])
+                    argout += 1
+                if self.word:
+                    output_wordX.append(outs[argout])
+                    argout += 1
+                output_y.append(outs[argout])
+                i += 1
+                if i == self.batch_size:
+                    out = []
+                    if self.char:
+                        output_charX = np.stack(output_charX)
+                        out.append(output_charX)
+                    if self.chrd:
+                        output_chrdX = np.stack(output_chrdX)
+                        out.append(output_chrdX)
+                    if self.word:
+                        output_wordX = np.stack(output_wordX)
+                        out.append(output_wordX)
+                    output_y = np.vstack(output_y)
+                    yield out, output_y
+                    output_charX = []
+                    output_chrdX = []
+                    output_wordX = []
+                    output_y = []
+                    i = 0
+            if i > 0:
                 out = []
                 if self.char:
-                    out.append(np.stack(output_charX))
+                    output_charX = np.stack(output_charX)
+                    out.append(output_charX)
                 if self.chrd:
-                    out.append(np.stack(output_chrdX))
+                    output_chrdX = np.stack(output_chrdX)
+                    out.append(output_chrdX)
                 if self.word:
-                    out.append(np.stack(output_wordX))
-                yield out, np.vstack(output_y)
-                i = 0
+                    output_wordX = np.stack(output_wordX)
+                    out.append(output_wordX)
+                output_y = np.vstack(output_y)
+                yield out, output_y
                 output_charX = []
                 output_chrdX = []
                 output_wordX = []
                 output_y = []
+                i = 0
 
     def __next__(self):
         return self.next()
