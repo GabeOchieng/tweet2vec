@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import pandas as pd
 
-data_in = './models/161205_rmsprop/epoch_history.csv'
+data_in = './models/161205_sgd_lab/epoch_history.csv'
 
 data = pd.read_csv(data_in)
 

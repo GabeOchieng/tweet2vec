@@ -4,11 +4,11 @@ from keras.layers import GRU
 from keras.layers import Dense
 from keras.layers import Dropout
 from keras.optimizers import SGD
-from keras.optimizers import RMSprop
 # from keras.layers.convolutional import Convolution1D
 # from keras.layers.pooling import GlobalAveragePooling1D
 from keras.layers.wrappers import Bidirectional
 from keras import backend as K
+from keras.optimizers import SGD
 from preprocess import KerasIterator
 from preprocess import TweetIterator
 from preprocess import text2mat
@@ -22,6 +22,7 @@ from utils import loadTweet2Vec
 import matplotlib.pyplot as plt
 from keras.callbacks import ModelCheckpoint
 from keras.callbacks import CSVLogger
+from sklearn.metrics.pairwise import euclidean_distances
 
 
 mlb_file = './models/mlb.pickle'
@@ -32,7 +33,7 @@ else:
 
 
 class Tweet2Vec:
-    def __init__(self, model=None, char=True, chrd=True, word=True):
+    def __init__(self, model=None, char=True, chrd=True, word=True, normalize=False):
         '''
         Initialize stuff
         '''
@@ -44,6 +45,7 @@ class Tweet2Vec:
         self.chrd_dim = chrdX.shape[1]
         self.word_dim = wordX.shape[1]
         self.output_dim = y.shape[1]
+        self.normalize = normalize
         self.vector_cache_ = {}
 
         # I think this just affects the feature preprocessing, probably should be num cores - 1
@@ -92,10 +94,9 @@ class Tweet2Vec:
         # The order here determines the order of your inputs. This must correspond to the standard (char, chrd, word) order.
         merged = Merge([chrd_branch, word_branch], mode='concat')
         self.model.add(merged)
-        # self.model = word_branch
 
         # final hidden layer(s)
-        self.model.add(Dropout(.25))
+        self.model.add(Dropout(.1))
         self.model.add(Dense(3000, activation='relu'))
         self.model.add(Dropout(.5))
         self.model.add(Dense(300))
@@ -104,9 +105,8 @@ class Tweet2Vec:
         self.model.add(Dense(self.output_dim, activation='softmax'))
 
         # loss function/optimizer
-        # sgd = SGD(lr=.25, decay=.05)
-        rmsprop = RMSprop(lr=.0025, decay=.05)
-        self.model.compile(loss='categorical_crossentropy', optimizer=rmsprop)
+        sgd = SGD(lr=.3, decay=.01)
+        self.model.compile(loss='categorical_crossentropy', optimizer=sgd)
 
     def fit(self, source, test=None, batch_size=100, samples=None, num_epochs=1, checkpoint=False):
         '''
@@ -195,7 +195,7 @@ class Tweet2Vec:
                 best_hashtags.append(predicted_hashtag)
             print("Predicted hashtags: {}\n".format(', '.join(best_hashtags)))
 
-    def __getitem__(self, tweet):
+    def __getitem__(self, tweet, batch_size=500):
         '''
         Gets the vector for tweet like the word2vec api
         e.g.
@@ -215,30 +215,35 @@ class Tweet2Vec:
 
         not_cached = [t for t in tweet if t not in self.vector_cache_]
 
-        # TODO this should happen in batches to avoid memory error
         if not_cached:
-            mats_in = []
-            if self.char:
-                charX = []
-                for t in not_cached:
-                    charX.append(text2mat(t, 'char'))
-                mats_in.append(np.stack(charX))
-            if self.chrd:
-                chrdX = []
-                for t in not_cached:
-                    chrdX.append(text2mat(t, 'chrd'))
-                mats_in.append(np.stack(chrdX))
-            if self.word:
-                wordX = []
-                for t in not_cached:
-                    wordX.append(text2mat(t, 'word'))
-                mats_in.append(np.stack(wordX))
-            not_cached_vectors = self.get_vec_(mats_in + [0])[0]
-            for t, v in zip(not_cached, not_cached_vectors):
-                norm_v = norm(v)
-                if norm_v == 0:
-                    norm_v = 1
-                self.vector_cache_[t] = v / norm(v)
+            # separate not_cached into batches
+            not_cached = [not_cached[i * batch_size:(i + 1) * batch_size] for i in range(len(not_cached) // batch_size + 1)]
+            for nc in not_cached:
+                if nc:
+                    mats_in = []
+                    if self.char:
+                        charX = []
+                        for t in nc:
+                            charX.append(text2mat(t, 'char'))
+                        mats_in.append(np.stack(charX))
+                    if self.chrd:
+                        chrdX = []
+                        for t in nc:
+                            chrdX.append(text2mat(t, 'chrd'))
+                        mats_in.append(np.stack(chrdX))
+                    if self.word:
+                        wordX = []
+                        for t in nc:
+                            wordX.append(text2mat(t, 'word'))
+                        mats_in.append(np.stack(wordX))
+                    nc_vectors = self.get_vec_(mats_in + [0])[0]
+                    for t, v in zip(nc, nc_vectors):
+                        self.vector_cache_[t] = v
+                        if self.normalize:
+                            norm_v = norm(v)
+                            if norm_v == 0:
+                                norm_v = 1
+                            self.vector_cache_[t] /= norm(v)
 
         return np.array([self.vector_cache_[t] for t in tweet])
 
@@ -248,7 +253,7 @@ class Tweet2Vec:
         similarity to `tweet`
         '''
 
-        best_d = -1
+        best_d = None
         best_t = ''
         target_v = self[tweet]
 
@@ -258,11 +263,13 @@ class Tweet2Vec:
             batch.append(t)
             i += 1
             if i == batch_size:
-                dists = np.dot(self[batch], target_v.T)
-                best_i = np.argmax(dists)
+                # cosine distance
+                # dists = -np.dot(self[batch], target_v.T)
+                dists = euclidean_distances(self[batch], target_v)
+                best_i = np.argmin(dists)
                 d = dists[best_i]
                 t = batch[best_i]
-                if d > best_d:
+                if best_d is None or d < best_d:
                     best_t = t
                     best_d = d
                 i = 0
