@@ -3,10 +3,12 @@ from keras.layers import Merge
 from keras.layers import GRU
 from keras.layers import Dense
 from keras.layers import Dropout
+from keras.optimizers import SGD
+from keras.optimizers import RMSprop
 # from keras.layers.convolutional import Convolution1D
 # from keras.layers.pooling import GlobalAveragePooling1D
 from keras.layers.wrappers import Bidirectional
-from keras import backend
+from keras import backend as K
 from preprocess import KerasIterator
 from preprocess import TweetIterator
 from preprocess import text2mat
@@ -60,10 +62,10 @@ class Tweet2Vec:
 
         # Former is using a merged model, latter if not
         if hasattr(self.model.layers[0], 'layers'):
-            self.get_vec_ = backend.function([layer.input for layer in self.model.layers[0].layers], [self.model.layers[-2].output])
+            self.get_vec_ = K.function([layer.input for layer in self.model.layers[0].layers] + [K.learning_phase()], [self.model.layers[-2].output])
             num_expected = len([layer.input for layer in self.model.layers[0].layers])
         else:
-            self.get_vec_ = backend.function([self.model.layers[0].input], [self.model.layers[-2].output])
+            self.get_vec_ = K.function([self.model.layers[0].input, K.learning_phase()], [self.model.layers[-2].output])
             num_expected = 1
 
         num_actual = len([i for i in [char, chrd, word] if i])
@@ -93,6 +95,7 @@ class Tweet2Vec:
         # self.model = word_branch
 
         # final hidden layer(s)
+        self.model.add(Dropout(.25))
         self.model.add(Dense(3000, activation='relu'))
         self.model.add(Dropout(.5))
         self.model.add(Dense(300))
@@ -101,7 +104,9 @@ class Tweet2Vec:
         self.model.add(Dense(self.output_dim, activation='softmax'))
 
         # loss function/optimizer
-        self.model.compile(loss='categorical_crossentropy', optimizer='nadam')
+        # sgd = SGD(lr=.25, decay=.05)
+        rmsprop = RMSprop(lr=.0025, decay=.05)
+        self.model.compile(loss='categorical_crossentropy', optimizer=rmsprop)
 
     def fit(self, source, test=None, batch_size=100, samples=None, num_epochs=1, checkpoint=False):
         '''
@@ -124,7 +129,9 @@ class Tweet2Vec:
             checker = ModelCheckpoint('./models/latest_model.keras', monitor='loss', verbose=1, save_best_only=True)
         else:
             test_iterator = KerasIterator(test, batch_size, char=self.char, chrd=self.chrd, word=self.word)
-            test_length = len(test_iterator.tweet_iterator)
+            # test_length = len(test_iterator.tweet_iterator)
+            # TODO debugging
+            test_length = 1000
             checker = ModelCheckpoint('./models/latest_model.keras', verbose=1, save_best_only=True)
         if checkpoint:
             callbacks = [checker]
@@ -226,7 +233,7 @@ class Tweet2Vec:
                 for t in not_cached:
                     wordX.append(text2mat(t, 'word'))
                 mats_in.append(np.stack(wordX))
-            not_cached_vectors = self.get_vec_(mats_in)[0]
+            not_cached_vectors = self.get_vec_(mats_in + [0])[0]
             for t, v in zip(not_cached, not_cached_vectors):
                 norm_v = norm(v)
                 if norm_v == 0:
@@ -306,7 +313,7 @@ if __name__ == '__main__':
 
     # samples=None (the default) will train on all input data
     # 6331717 samples in train set
-    tweet2vec.fit(train, samples=10**6, test=test, num_epochs=1000, checkpoint=True)
+    tweet2vec.fit(train, test=test, samples=10**6, num_epochs=1000, checkpoint=True)
     # tweet2vec.evaluate(test)
     # tweet2vec.most_similar_test(train, test)
     # tweet2vec.plot()
